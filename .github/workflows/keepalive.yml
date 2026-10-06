@@ -1,0 +1,86 @@
+name: keepalive-session
+
+on:
+  workflow_dispatch:
+  schedule:
+    # cron 只認 UTC。每 5 日（1/6/11/16/21/26/31）跑一次，距 15 天停用線有 3 倍餘量
+    - cron: '37 6 */5 * *'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk python3-tk
+          pip install seleniumbase requests pysocks
+          seleniumbase install chromedriver
+
+      - name: Fetch sing-box
+        run: |
+          curl -sL -o /tmp/sb.tgz https://github.com/SagerNet/sing-box/releases/download/v1.10.7/sing-box-1.10.7-linux-amd64.tar.gz
+          tar xzf /tmp/sb.tgz -C /tmp
+          cp /tmp/sing-box-1.10.7-linux-amd64/sing-box .
+
+      - name: Run keep-alive
+        env:
+          LUNES_EMAIL: ${{ secrets.LUNES_EMAIL }}
+          LUNES_PASSWORD: ${{ secrets.LUNES_PASSWORD }}
+          NODE_CONFIG: ${{ secrets.NODE_CONFIG }}
+          PROXY_PORT: '1081'
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
+            python3 keepalive.py
+
+      - name: Upload screenshot evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: keepalive-screenshot
+          path: keepalive.png
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Keep repo active (time.txt)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "$(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M:%S')" > time.txt
+          git add time.txt
+          if git diff --cached --quiet; then
+            echo "No change"
+          else
+            git commit -m "chore: touch time.txt"
+            git pull --rebase origin main || true
+            git push origin main
+          fi
+
+      - name: Prune old run records
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh run list --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
+          count=0
+          for run_id in $runs; do
+            count=$((count + 1))
+            if [ "$count" -gt 1 ]; then
+              gh run delete "$run_id" || true
+            fi
+          done
