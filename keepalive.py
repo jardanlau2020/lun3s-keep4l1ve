@@ -223,27 +223,34 @@ def main():
                                               and "betadash" in u):
                     break
             step = "verify"
-            src = sb.get_page_source() or ""
-            tl = (sb.get_title() or "").lower()
-            ok = ("account" in tl) and (EMAIL.lower() in src.lower()) \
-                 and ("log out" in src.lower())
+            # get_page_source proved unreliable (returns empty/stale) — use CDP
+            title = sb.execute_script("return document.title") or ""
+            body = sb.execute_script(
+                "return document.body ? document.body.innerText : ''") or ""
+            url = u
+            has_email = EMAIL.lower() in body.lower()
+            has_logout = "log out" in body.lower()
+            has_welcome = "welcome back" in body.lower()
+            ok = ("account" in title.lower()) and has_email and has_logout
+            log(f"verify: title={title!r} url={url!r} "
+                f"email={has_email} logout={has_logout} welcome={has_welcome}")
             try:
                 sb.save_screenshot(os.path.join(OUT, "keepalive.png"))
             except Exception as e:
                 log("screenshot err:", e)
-            # best-effort server page hit (same login_required decorator)
+            # best-effort extra authenticated hit (same login_required decorator)
             try:
                 sb.open("https://betadash.lunes.host/")
                 log("extra authenticated GET / ok")
             except Exception as e:
                 log("extra GET err:", e)
             if ok:
-                log("SUCCESS: account page verified")
+                log("SUCCESS: account page verified via CDP")
                 tg("✅ 续期成功（会话已刷新）",
                    f"出口: {'sing-box 代理' if proxy_on else '直连'}")
                 sys.exit(0)
-            log(f"VERIFY FAIL title={t!r} url={u!r}")
-            tg("❌ 续期失败", f"阶段: {step}\n标题: {t}\nURL: {u}")
+            log(f"VERIFY FAIL title={title!r} url={url!r}")
+            tg("❌ 续期失败", f"阶段: {step}\n标题: {title}\nURL: {url}")
             sys.exit(3)
     except SystemExit:
         raise
