@@ -211,23 +211,29 @@ def main():
                 log("no turnstile widget found")
             step = "submit"
             sb.click('button[type="submit"]')
-            t, u = "", ""
-            for _ in range(15):
+            # Readiness trap: <title> arrives with <head> BEFORE <body> streams in,
+            # so polling title alone verifies an empty document. Poll until the
+            # account markers are inside body.innerText. (JS must stay ONE LINE:
+            # seleniumbase CDP evaluate fails on multi-line scripts.)
+            PROBE = ("(function(){var b=document.body;var t=b?(b.innerText||''):'';"
+                     "return {nb:!b,title:document.title||'?',url:location.href||'?',text:t};})()")
+            snap = None
+            for i in range(25):
                 time.sleep(1)
                 try:
-                    t = sb.get_title() or ""
-                    u = sb.get_current_url()
-                except Exception:
-                    pass
-                if "account" in t.lower() or ("login" not in u.split("?")[0].lower()
-                                              and "betadash" in u):
-                    break
+                    snap = sb.execute_script(PROBE)
+                except Exception as e:
+                    log("probe err:", str(e)[:150])
+                    continue
+                if snap and not snap.get("nb"):
+                    tx = (snap.get("text") or "").lower()
+                    if "welcome back" in tx or "log out" in tx or "account control" in tx:
+                        log(f"markers visible at poll {i+1}s")
+                        break
             step = "verify"
-            # get_page_source proved unreliable (returns empty/stale) — use CDP
-            title = sb.execute_script("return document.title") or ""
-            body = sb.execute_script(
-                "return document.body ? document.body.innerText : ''") or ""
-            url = u
+            title = (snap or {}).get("title", "")
+            url = (snap or {}).get("url", "")
+            body = (snap or {}).get("text", "")
             has_email = EMAIL.lower() in body.lower()
             has_logout = "log out" in body.lower()
             has_welcome = "welcome back" in body.lower()
@@ -238,19 +244,21 @@ def main():
                 sb.save_screenshot(os.path.join(OUT, "keepalive.png"))
             except Exception as e:
                 log("screenshot err:", e)
-            # best-effort extra authenticated hit (same login_required decorator)
-            try:
-                sb.open("https://betadash.lunes.host/")
-                log("extra authenticated GET / ok")
-            except Exception as e:
-                log("extra GET err:", e)
             if ok:
                 log("SUCCESS: account page verified via CDP")
+                # extra authenticated hit (same login_required decorator)
+                try:
+                    sb.open("https://betadash.lunes.host/")
+                    log("extra authenticated GET / ok")
+                except Exception as e:
+                    log("extra GET err:", e)
                 tg("✅ 续期成功（会话已刷新）",
                    f"出口: {'sing-box 代理' if proxy_on else '直连'}")
                 sys.exit(0)
-            log(f"VERIFY FAIL title={title!r} url={url!r}")
-            tg("❌ 续期失败", f"阶段: {step}\n标题: {title}\nURL: {url}")
+            reason = ("登录页残留（可能被拒）" if "login" in (url or "")
+                      else "标志未出现（body 未渲染或会话未建立）")
+            log(f"VERIFY FAIL reason={reason} title={title!r} url={url!r}")
+            tg("❌ 续期失败", f"阶段: {step}\n{reason}\n标题: {title}\nURL: {url}")
             sys.exit(3)
     except SystemExit:
         raise
